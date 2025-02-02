@@ -1,0 +1,624 @@
+
+
+
+
+
+
+Energy-Based Models Intro
+
+
+- idea: let p(x) denote the probability of observing sample x under some probablistic distribution, parameterized by theta
+    -- as long as we can compute the integration of p(x) over all x, we can normalize and produce a valid probability distribution that satisfies "integration over all possible samples = 1"
+    -- assume the integration is Z(theta) and not-normalized probability density = g(x), parameterized over theta 
+    -- p(x) = g(x) / Z(theta) is a valid probability distribution 
+
+    -- for example: sqrt(2*pi*sigma^2) is the normalizing constant, and that's where Gaussian formula is from
+
+
+
+- general form: define Z(theta) = integral of [exp(f(x))] dx; where f(x) is parameterized over theta, energy-based model can be defined as 
+                    p(x) = (1/Z(theta)) * exp(f(x))
+    -- Z(theta) is also called the partition function 
+
+
+
+- in reality 
+    -- finding Z(theta) is extremely hard 
+    -- but we don't need to find it if we are just comparing the probability between two data points (x vs. x')
+            p(x) / p(x') = exp(f(x) - f(x'))
+    -- so we can easily check which one is more likely - will be very useful when designing sampling procedures 
+
+
+
+- for training the model: maximize [exp(f(x_train))] / [Z(theta)]   ------------> contrastive divergence
+    -- intuition: increase numerator, decrease denominator
+        --- just increase numerator cases increase in denominator, for example, increase the size of a slize of the pie will increase the size of the total pie, make the ratio mostly unchanged
+        --- therefore, we need to increase the numerator representing p("right answers") while try to decreasing p("wrong answers"), and decreasing denominator 
+    
+    -- instead of evaluating Z(theta) exactly, we will use Monte Carlo estimate
+        --- sample from the model to approximate total un-normalized of everything ----> "wrong answers"
+        --- compare training samples ("right answers") with the "wrong answers"
+        --- and we are going to increase the probability of positive samples, and decrease the probability of everything else ("wrong answers")
+    
+    -- formally: the algorithm 
+        --- sample x_sample from p_theta 
+        --- take step on the gradient (with respect to theta) of [f(x_train) - f(x_sample)]
+
+
+
+- but how do we sample? 
+    -- idea: no direct way to sample like in autoregressive or flow models, main issue - cannot easily compute how likely each possible sample is 
+        --- but we can easily compare two samples, x and x' 
+        --- use an iterative approach called Markov Chain Monte Carlo to perform local search 
+    
+    -- algorithm (Metropolis-Hastings Markov Chain Monte Carlo)
+        --- let x' = x_t + noise 
+             if f(x') > f(x_t), let x_(t+1) = x' 
+             else let x_(t+1) = x' with probability exp(f(x') - f(x_t))  ------> occassionally take the worse choice, so model can explore more of the space 
+                    otherwise x_(t+1) = x_t
+        --- repeat for t = 0, 1, 2, ..., T-1
+        --- works in theory, but can take a very long time to converge 
+        --- downside: in practice, need a large number of iterations and convergence slows down exponentially in dimensionality 
+
+
+    -- algorithm (unadjusted langevin MCMC)
+        --- sample x_0 as a random image 
+        --- repeat for t = 0, 1, 2, ..., T-1:
+                z_t ~ N(0, I)
+                x_(t+1) = x_t + [epsilon * gradient of (log(p(x))) with respect to x] + sqrt(2*epsilon) * z_t 
+        --- intuitively: update in a way that should increase the probability of the sample with a little randomness added at the end (so we explore the space too)
+        --- much better proposal, because we are not just blindly making changes to the image, but convergence still only guaranteed at the limit of T 
+        --- sampling converges slowly in high dimensional spaces and is thus very expensive, yet we need sampling for each training iteration in contrastive divergence 
+
+
+
+
+
+
+
+Training Energy-based Models without Sampling (Score Matching, Noise Contrastive Estimation, Adversarial Training)
+
+
+- Score Matching 
+
+    -- score function 
+            s(x) := the gradient of (log(p(x))) with respect to x = the gradient of f(x) with respect to x 
+                    s(x), f(x), and p(x) are parameterized by theta
+                    the gradient of (log(Z(theta))) with respect to x is 0
+    
+        --- s(x) can be thought of as a vector field that points each element of x in the direction of achieving higher probability 
+    
+
+    -- idea of score matching training 
+        --- assume p(x) represents the data distribution, and q(x) represents the model distribution 
+        --- find fisher divergence between p(x) and q(x) 
+                    D_F(p,q) = 1/2 * E_(x~p)[L2 distance between (gradient of log(p(x)) w.r.t. x) and (gradient of log(q(x)) w.r.t. x)]
+            can think of Fisher divergence as the derivative of the KL divergence in a certain way 
+        
+        --- minimizing the Fisher divergence
+                    1/2 * E_(x~p_data)[L2 distance between (gradient of log(p_data(x)) w.r.t. x) and (gradient of f(x) w.r.t. x)]
+        
+        --- problem: we don't know the gradient of log density of the data 
+    
+    
+    -- using integration by parts to bypass the gradient of log data density 
+        --- derivation: https://www.youtube.com/watch?v=Nci1Bepcy0g&t=8s at 46:25
+        --- final form (in 1 dimensional case)
+                    = E_(x~p_data)[ 1/2 * 
+                                    [(gradient of log(q(x))^2) w.r.t. x] + 
+                                    [second derivative of log(q(x)) w.r.t. x] 
+                                  ] 
+                        + constant
+    
+
+    -- implementation of score matching training
+        --- sample a mini-batch of datapoints {x_1, ..., x_n} ~ p_data(x)
+        --- estimate the score matching loss with the empirical mean 
+                1/n * summation over all n {
+                    1/2 * 
+                    L2 norm of (gradient of f(x_i) w.r.t. x_i) + 
+                    trace(Hessian matrix of f(x_i))
+                }
+                    hessian matrix of f(x_i) is the second derivative of f(x_i) w.r.t. x_i 
+        --- every gradient is w.r.t. theta, take stochastic gradient descent 
+        --- no need to sample from EBM 
+        
+        --- problemm: finding Hessian matrix is computationally expensive 
+            denoising score matching 
+            sliced score matching 
+    
+
+
+
+- Noise Constrastive Estimation 
+    
+    -- intuition: as opposed to contrast data to samples from the model, we are going to contrast the data to samples from some noise distribution (that is not necessarily the model distribution) 
+
+    -- set up 
+        --- data distribution: p_data(x) 
+        --- noise distribution: p_n(x), should be analytically tractable and easy to sample from 
+        --- training a discriminator D(x), parameterized by theta, and outputs [0, 1] to distinguish between data samples and noise samples 
+    
+    -- by training the discriminator, we are implicitly learning p_theta(x) toward p_data(x)
+        p_theta(x) is an energe-based model 
+
+    -- define the discriminator as (parameterized by theta and Z, it's another energy-based model)
+            D(x) = [e^(f_theta(x))/Z] / [e^(f_theta(x))/Z + p_n(x)]
+
+
+
+
+
+
+
+
+
+
+
+Score-based Generative Models 
+
+
+- difference w.r.t. EBM
+    -- we are not going to model necessarily the energy and then take the gradient of it (where the output is a scaler, a score)
+    -- instead, we are going to directly think about different kinds of vector fields that we can get and we can parameterize using a neural network 
+    -- it is a mapping from R_d to R_d (the dimensionality doesn't change between input and output)
+
+
+- compute loss (vanilla version)
+            E_(x~p_data)[
+                1/2 * 
+                L2 distance of s(x) + ------> parameterized by theta 
+                tr(Jacobian of s(x))
+            ]
+    -- Jacobian of s(x) = gradient of s(x) w.r.t. x 
+
+    -- since the model directly outputs s(x), the first term can be easily calculated 
+    -- Jacobian can be calculated as backpropogation through the model 
+        --- e.g., position (1, 1) of the Jacobian matrix is derivative of s_(theta, 1)(x) w.r.t. x_1 
+                e.g., given input (x_1, x_2, x_3), the output will be (s_(theta, 1), s_(theta, 2), s_(theta, 3))
+    
+    -- it is inefficient, the number of backpropogation steps scales linearly with the number of dimensions 
+    -- we need more scalable kind of approximations that works in high dimensions 
+
+
+
+- Denoising Score Matching - high level idea
+
+    -- instead of modeling data distribution directly, model perturbed distribution 
+
+    -- consider x' where 
+        q_sigma(x'|x) = N(x;sigma^2*I) ---------> adding Gaussian noise to original x 
+    
+    -- score estimation for gradient of log(q(x')) w.r.t. x' is easier 
+
+    -- if the noise level is small, this is a good approximation 
+
+    -- loss 
+            1/2 * E_(x'~q_sigma)[L2 distance of (
+                gradient of log(q(x')) w.r.t. x' -      -------------> parameterized by sigma 
+                s(x')                                   -------------> parameterized by theta 
+            )]
+
+        --- after integration by parts trick
+            1/2 * E_(x~p_data(x),  x'~q_sigma(x'|x)) [L2 norm of (
+                s(x') -                                 -------------> parameterized by theta 
+                gradient of log(q(x'|x)) w.r.t. x'      -------------> parameterized by sigma 
+            )] + constant 
+
+        --- gradient of log(q(x'|x)) w.r.t. x' is easy to compute because q(x'|x) is just Gaussian N(x'|x, sigma^2 * I)
+                    = - (x' - x) / sigma^2 
+        
+        --- pros and cons 
+                pros: efficient to optimize even for very high dimensional data, and useful for optimal denoising, there's no Jacobian to compute 
+                con: cannot estimate the score of clean data (noise-free)
+    
+    -- algorithm 
+        
+        --- sample a minibatch of datapoints {x_1, ..., x_n} ~ p_data(x)
+        
+        --- sample a minibatch of perturbed datapoints {x'_1, ..., x'_n} ~ q_sigma(x') where x'_i ~ q_sigma(x'_i | x_i)
+        
+        --- estimate the denoising score matching loss with empirical means (given Gaussian noise)
+                    1 / (2n) * summation over i from 1 to n [
+                        L2 norm of (
+                            s(x'_i) +                           ------------------> parameterized by theta 
+                            (x'_i - x_i) / sigma^2
+                        )
+                    ]
+        
+        -- stochastic gradient descent 
+    
+    -- after sufficient training, the neural network s_theta(x) will be able to predict the noise 
+        --- s(x') will be able to match gradient of log(q(x'|x)) w.r.t. x', and that represents how to preturb the image to increase the probability of the image 
+        --- note that the neural network only sees the noisy data x'  
+    
+
+    -- how do we generate samples? (Langevin MCMC)
+
+        --- initialize randomly, then follow noisy scores:
+
+                x'_(t+1) = x'_t + (epsilon/2) * s_theta(x'_t) + sqrt(epsilon) * z_t         where z_t ~ N(0, I)
+        
+        --- if epsilon --> 0 and T --> infinity, we are guaranteed to have x_T ~ p(x)
+
+
+
+
+
+
+
+
+Noise Conditional Score Model
+
+
+
+- the original score matching algorithm (estimating the score on original image) is bad 
+
+    -- data lies on a lower-dimensional manifold and data score is undefined, adding noise could given more flexibility to the distribution of data+noise, so easier to estimate the score this way
+
+    -- gradiens will be accurate when initialized image lies near the high-probability region (i.e., the initialization is close to the high-density region, which is unlikely)
+        but gradients will be very inaccurate when the probability of the initilization is very low (i.e., pure noisy image) as model doesn't know which direction (of pixels) can increase the probability
+        
+        --- adding noise will be let the model learn to handle noisy image (which will have low probability density), then learn to direct the pixels toward high probability density region 
+
+    -- the score function has no dependence on the mode weighting at all 
+        --- for example, assume there are only two modes in the data distribution and most of the data points is scattered around the first mode,
+        --- the Langevin MCMC will produce equal amount of data points to both modes regardless of the original data distribution 
+
+
+
+- cons 
+
+    -- the model no longer approximates the true data density, it estimates perturbed density 
+
+    -- will produce samples from a noisy data distribution, i.e., samples will be noisy images 
+
+
+
+- trade off between levels of noise added 
+
+    -- low level noise: high-quality sample it can produce, high errors in estimating scores (high-probability in just producing pure noise), estimating what was intended
+
+    -- high level noise: low-quality sample produced (noisy image), low errors in estimating scores (low-probability of producing pure noise), estimating what was not intended 
+
+
+
+
+- annealed Langevin Dynamics: joint scores to samples 
+
+    -- high-level idea 
+        --- sample using sigma_1, sigma_2, ..., sigma_L sequentially with Langevin dynamics (typically L=1000 in practice)
+                for T steps for each sigma (corresponded to each score matching model), update the image by following the noisy scores (with some randomness added)       
+        --- anneal down the noise level 
+        --- samples used as initialization for the next level
+
+    -- modifications to model configuration
+        --- in addition to using noisy image as input, we add sigma to the input (Noise Conditioanl Score Network)
+    
+    -- loss function - weighted combination of denoising score matching losses 
+            1/L * summation over i = 1 to L [
+                lambda(sigma_i) * E_q_sigma_i(x) [
+                    L2 norm of (
+                        gradient of log(q_sigma_i(x)) w.r.t. x -
+                        s_theta(x, sigma_i)
+                    )
+                ]
+            ]
+
+        =   1/L * summation over i = 1 to L [
+                lambda(sigma_i) * E_[x~p_data, z~N(0,I)] [
+                    L2 norm of (
+                        gradient of log(q_sigma_i(x'|x)) w.r.t. x' -
+                        s_theta(x', sigma_i)
+                    )
+                ]
+            ] + constant 
+        
+        =   1/L * summation over i = 1 to L [
+                lambda(sigma_i) * E_[x~p_data, z~N(0,I)] [
+                    L2 norm of (
+                        s_theta(x + sigma_i * z, sigma_i) + 
+                        z / sigma_i
+                    )
+                ]
+            ] + constant 
+
+
+- choosing noise scales 
+    -- sigma_1 is approximately the maximum pairwise distance between datapoints 
+        --- we want to add enough noise that, there's a probability of moving from one data point to another, so there's sufficient exploration at the max noise level 
+    
+    -- sigma_L is the minimum noise scale, and it should be sufficiently small so that noise in final samples is negligible 
+
+    -- transition between noise scales: 
+        --- adjacent noise scales should have sufficient overlap so that the noisy image which is the starting point for the next noise level makes sense for the new noise level 
+        --- a geometric progression with sufficient length 
+                (sigma_1/sigma_2) = ... = (sigma_(L-1) / sigma_L) 
+
+
+
+- choosing the weighting function 
+    -- goal: balancing different score matching losses in the sum ----> lambda(sigma_i) = sigma^2_i
+
+    -- loss function becomes 
+
+            1/L * summation over i = 1 to L [
+                    sigma^2_i * E_[x~p_data, z~N(0,I)] [
+                        L2 norm of (
+                            s_theta(x + sigma_i * z, sigma_i) + 
+                            z / sigma_i
+                        )
+                    ]
+                ]
+            
+            =   1/L * summation over i = 1 to L [
+                E_[x~p_data, z~N(0,I)] [
+                    L2 norm of (
+                        sigma_i * s_theta(x + sigma_i * z, sigma_i) + 
+                        z
+                    )
+                ]
+            ]
+
+
+- final algorithm 
+
+    -- sample a mini-batch of datapoints {x_1, ..., x_n} ~ p_data 
+
+    -- sample a mini-batch of noise scale indices
+            {i_1, ..., i_n} ~ U{1, 2, ..., L}
+    
+    -- sample a mini-batch of Gaussian noise {z_1, ..., z_n} ~ N(0, I)
+
+    -- estimate the weighted mixture of score matching losses 
+
+            1/n * summation over k = 1 to n [
+                    E_[x~p_data, z~N(0,I)] [
+                        L2 norm of (
+                            sigma_i_k * s_theta(x + sigma_i_k * z_k, sigma_i_k) + 
+                            z_k
+                        )
+                    ]
+                ]
+    
+    -- stochastic gradient descent 
+
+    -- this is as efficient as training one single non-conditional score-based model 
+
+
+- first model at the time to beat GAN 
+
+
+
+
+
+
+
+Score-based Generative Modelling via SDEs
+
+
+- if we consider adding noise as a continuous process, where each addition of noise will be stochiastic step (like a random walk for each pixel)
+        {x_t} where t belongs to [0, T] is the image at time step t 
+        {p_t(x)} where t belongs to [0, T] is the probability densities
+
+- we can model this stochastic process as 
+        dx_t = f(x_t, t)dt + g(t) dw_t 
+    
+    -- since we are going from image to pure noise, the stochastic process can be described as 
+        dx_t = sigma(t) dw_t 
+
+- generation via reverse stochastic processes 
+    -- recall forward SDE (t: 0 -----> T):
+            dx_t = sigma(t) dw_t 
+    
+    -- reverse SDE (t:T --------> 0):
+            dx_t = -sigma^2(t) * [gradient of log(p_t(x_t)) w.r.t. x] dt + sigma(t) dw'_t
+        
+        --- where 
+                gradient of log(p_t(x_t)) w.r.t. x  ---------------> the score function 
+                dw'_t                               ---------------> infinitesimal noise in the reverse time direction 
+    
+    -- so if we have access to the score function of the densities corresponding to data + noise at time t, 
+        then there's a simple, stochastic differential equation that describes the process of reverse noice to data
+
+
+
+
+
+
+
+
+Evaluation of Generative Models 
+
+- Inception Scores 
+
+    -- assumptions: 
+        --- 1. evaluating sample quality for generative models trained on labelled datasets 
+        --- 2. have a good probabilistic classifier c(y|x) for predicting the label y for any point x 
+    
+    -- we want samples from a good generative model to satisfy two criteria 
+        --- sharpness (S): clearness and bluriness of the image - unclear and blury images are harder to classify 
+                S = exp(E_(x~p) [integral of (
+                    c(y|x) * 
+                    log(c(y|x)) dy
+                )])
+                
+                high sharpness implies classifier is confident in making predictions for generated images -----> classifier's predictive distribution c(y|x) has low entropy
+                if the classifier is putting all the probability mass on one single y, the sharpness value will be high 
+        
+        --- diversity (D): the model should produce images of all the classes that are represented in the training set 
+                D = exp(-E_(x~p)[integral of {
+                    c(y|x) *
+                    log(c(y)) dy
+                }])
+
+                c(y) = E_(x~p)[c(y|x)] is the classifier's marginal predictive distribution 
+                high diversity implies c(y) has high entropy 
+    
+    -- inception score (IS)
+            IS = D * S 
+
+
+- Frechet Inception Distance (FID) 
+
+    -- inception scores only look at samples, without comparing to real data distribution 
+
+    -- FID measures similarities in the feature representations for datapoints samples from p_tehta and the test dataset 
+
+    -- computing FID 
+        --- let G denote the generated samples and T denote the test dataset 
+        --- compute feature representations F_G and F_T (e.g., prefinal layer of Inception Net) 
+        --- fit a multivariate Gaussian to each of F_G and F_T 
+        --- let (mu_G, SIGMA_G) and (mu_T, SIGMA_T) denote the mean and covariance of the two Gaussians, the closer the two Gaussians are, the better the sample quality 
+        --- FID is defined as the Wasserstein-2 distance between the two Gaussians: 
+                
+                FID = [
+                    L2 distance of (mu_T - mu_G) + 
+                    Tr(
+                        SIGMA_T + SIGMA_G - 2 * (SIGMA_G @ SIGMA_T)^(1/2)
+                    )
+                ]
+
+
+
+- Kernel Inception Distance (KID)
+
+    -- maximum mean discrepancy (MMD) is a two-sample test statistic that compares samples from two distributions p and q by computing differences in their moments (mean, variances etc.)
+
+    -- key idea: use a suitable kernel e.g., Gaussian to measure similarity between points 
+            MMD(p, q) = [
+                E_(x,x'~p)[K(x,x')]                     --------------------------------> e.g., average similarity between two real data
+                + E_(x,x'~q)[K(x,x')]                   --------------------------------> e.g., average similarity between two generated samples
+                - 2E_(x~p, x'~q)[K(x,x')]               --------------------------------> e.g., average similarity between a real image and a fake sample 
+            ]
+        
+        --- it evaluates to 0 if p = q 
+    
+    -- KID: compute the MMD in feature space of a classifier (e.g., Inception Network)
+
+    -- FID vs. KID 
+        --- FID is biased (can only be positive), KID is unbiased 
+        --- FID can be evaluated in O(n) time, KID evaluation requires O(n^2) time
+
+
+
+
+
+
+
+
+Diffusion Models 
+
+- recall annealed Langevin dynamic can be used to generate high-quality samples with Noise Conditional Score Model 
+    -- by applying the model at high-sigma level to random noisy image, then repeated using the output from the model as inputs to the model at lower-sigma level
+
+
+- sampling as iterative denoising 
+    
+    -- now think of this process as a variational autoencoder
+        --- encoder process: forward process - transforming image to pure noise 
+        --- decoder process: backward process - transforming pure noise back to image 
+    
+
+- encoder process
+        q(x_t | x_(t-1)) = N(x_t;   sqrt(1-beta_t) * x_(t-1),   beta_t * I)
+    
+    -- this defines a joint distribution 
+        q(x_(1:T) | x_0) = product of t from 1 to T (q(x_t | x_(t-1)))
+    
+    -- this encoder can be thought of as producing higher-dimensional output than x_0, because it produces a collection of {x_t}_(t~[1:T])
+
+    -- multi-step transitions are also Gaussin and can be computed as 
+
+        q(x_t | x_0) = N(x_t;    sqrt(alpha'_t) * x_0,     (1-alpha'_t) * I)
+
+            alpha'_t = product of s from 1 to t (1 - beta_s)
+    
+    -- this is the same as noise-perturbed data distributions in score-based models 
+    -- efficient sampling at any t 
+
+
+
+- decoder process (approximation to the true reverse process)
+
+    -- sample x_T from p(x_T) = N(x_T;  0,  I)
+
+    -- iteratively sample from p_theta( x_(t-1) | x_t) = N(x_(t-1);   mu_theta (x_t, t),   sigma^2_t * I)
+        --- the parameter of this Gaussian is computed by a neural network
+    
+    -- joint distribution 
+            p_theta(x_[0:T]) = p(x_T) * product of t from 1 to T (p_theta ( x_(t-1) | x_t ))
+    
+    -- hierachical VAE (decoder) 
+            p(x, z_1, z_2) = p(z_2) * p(z_1 | z_2) * p(x | z_1)
+        --- sample z_2 from a simple prior N(0, I) 
+        --- sample z_1 from a decoder p(z_1 | z_2) 
+        --- sample x from a decoder p(x | z_1)
+    
+    -- if parameterize the mu_theta from  N(x_(t-1);   mu_theta (x_t, t),   sigma^2_t * I) as 
+            mu_theta(x_t, t) = (1 / sqrt(1 - beta_t))
+                                * (x_t 
+                                    - (beta_t / (1 - alpha'_t)) * epsilon_theta(x_t, t))
+        
+        --- then up to a scaling, ELBO loss reduces to denoising score matching 
+
+            L = E_(x_0 ~ q(x_0),   t ~ U{1, T},   epsilon ~ N(0, I)) [
+                lambda_t * L2 norm of (                             ------------> lambda_t represents how much you care about certain time steps 
+                    epsilon                                         ------------> sampled Gaussian noise 
+                    - epison_theta(                                 ------------> output from network 
+                        sqrt(alpha'_t) * x_0
+                        + sqrt(1 - alpha'_t) * epsilon 
+                        , t
+                    )
+                )
+            ]
+
+
+- U-Net 
+
+    -- each encoding step (adding noise) should have a corresponding decoding step (removing noise)
+
+    -- U-Net became a natural architecture to encode and decode many steps at once 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+
+
+
+
+
+
+
+
