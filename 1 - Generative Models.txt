@@ -574,11 +574,6 @@ Diffusion Models
             ]
 
 
-- U-Net 
-
-    -- each encoding step (adding noise) should have a corresponding decoding step (removing noise)
-
-    -- U-Net became a natural architecture to encode and decode many steps at once 
 
 
 

@@ -1,0 +1,304 @@
+
+
+
+
+2023 - innovations
+
+
+- RMS (Root Mean Square) Normalization  
+    -- layer normalization: normalizing each sample across all features (e.g., normalize across all pixel values for an image, or across all embedding values for a token)
+        --- for a 2D case (Batch, Feature), this is normalization across rows 
+    -- batch normalization: normalizing each feature across all samples in a batch (e.g., normalize across all 32 batches of every image pixel value or every token embedding value)
+        --- for a 2D case (Batch, Feature), this is normalization across columns 
+    
+    -- RMS normalization: still works at row level like layer normalization 
+        --- claimed that the success of layer normalization is due to re-scaling (variance control), and not due to re-centering (mean control)
+        --- so they tried to look for another statistic that is only dependent on controling the variance, and left the mean untouched
+        --- formula
+                        a'_i = [a_i / RMS(a)] * g_i 
+                        RMS(a) = sqrt[
+                            1 / n * summation over i from 1 to n (
+                                a_i ^ 2
+                            )
+                        ]
+    -- why use RMS Norm?
+        --- requires less computation compared to Layer Normalization 
+        --- it works well 
+
+
+
+
+- Rotary Positional Embedding (LLaMA)
+
+    -- what's the difference between the absolute positional encodings and the relative ones 
+        --- absolute positional encodings are fixed vectors that are added to the embedding of a token to represent its absolute position in the setence 
+                it deals one token at a time
+        --- relative positional encodings deals with two tokens at a time, and it is involved when we calculate the attention 
+                attention mechanism captures the "intensity" of two-word relation, this encoding tells the attention the distance between the two words
+                given two tokens, we create a vector that represents their distance 
+    
+
+
+    -- only applied to Q, K, and not V
+
+
+
+
+- KV Cache (LLaMA)
+
+
+
+
+
+- Grouped Multi-Query Attention (LLaMA)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+2024 - innovations
+
+
+
+
+
+
+
+
+- MoE 
+
+
+
+
+
+- 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+- post training for assistant:
+    -- Training language models to follow instructions with human feedback paper 
+
+
+
+
+- Retrievel-Augmented Generation
+
+
+
+
+- MoE and MLA 
+    -- DeepSeek v2 paper 
+
+
+
+
+
+- knowledge distillation 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+- deal with hallucinations
+    -- problem: the assistant will try to mimic the behavior of the training dataset
+        --- e.g., at training time, when who Tom Cruise is, the training assistant response will tell us exactly who he is 
+        --- but at test time, when a random name is being asked, the model will mimic the confident responses similar to the training set, make something up 
+    -- solution in Llama 3 paper ---> 4.3.6 factuality section 
+        --- interrogate the model about facts and see if it knows
+        --- if not, put this question into training set where something like "Sorry I don't know" would be the response to the question 
+
+
+
+
+
+- how model can search the internet 
+    -- with special tokens like <SEARCH_START> and <SEARCH_END>, then the model will stop generating, go search the query and parse the text returned then process it 
+    -- what's the details?
+
+
+
+- self-aware
+    -- provide training question & answer ientifying the model the train the model on that data 
+    -- or, provide the "self introduction" in the context window before the first user input question 
+
+
+
+- where do LLM fail 
+    -- model needs tokens to think
+        --- if I have a complex math problem, and if ask the model to directly output the answer (from a single forward pass), the model cannot do it 
+                instead, naturally, the model will break the steps down, and distribute the problem-solving into many forward passes, and derive the right answer 
+        --- can ask the model to use tool like Python interpreter to get reliable answer 
+    
+    -- model cannot count
+        --- e.g., how many dots are in ".............................."
+        --- ask the model to use tool 
+
+    -- model bad at spelling 
+        --- they don't see individual letters, but letter chunks (mapped a token) 
+
+
+
+
+
+
+
+
+- Reinforcement Learning from Human Feedback (RLHF)
+    -- paper: Fine-Tuning Language Models from Human Preference
+
+
+
+
+Reinforcement Learning from Human Feedback 
+
+
+
+- trajectories in language models 
+    -- we want to fine-tune the language model so that it selects the next token in such a way as to maximize the reward it gets 
+    
+    -- example of a trajectory 
+        --- s_0: Where is Shanghai? 
+        --- a_0: Shanghai 
+        --- s_1: Where is Shanghai? Shanghai 
+        --- a_1: is 
+        --- s_2: Where is Shanghai? Shanghai is 
+        --- ...
+    
+
+- Policy Gradient Optimization 
+    -- the objective is to maximize expected rewards when we use the policy, that is parameterized by theta 
+    -- so updating the parameter theta involves 
+            theta_(k+1) = theta_k + learning_rate * the gradient of J(pi_theta) w.r.t. theta 
+            where J(pi_theta) = E_(i~pi_theta) [R(i)]
+    -- calculating the exepcted rewards involves averaging over all possible trajectories, which is not possible for language model, but we can use sample average instead 
+            derivative of the objective 
+            = 1 / D * summation over (i~D) [
+                summation over (t from 1 to T) [
+                    gradient (w.r.t. theta) of [
+                        log(pi_theta(a_t|s_t) * R(i))
+                    ]
+                ]
+            ]
+    -- steps 
+        --- 1. create a neural network that defines a policy (takes an input the current state of the agent and outputs the probability over the action space) - base-model 
+        --- 2. use the network to sample trajectories and their corresponding rewards (we can run each trajectory until if finishes or reached the max step_size)
+        --- 3. use the sample to calculate the gradient 
+        --- 4. run stochastic gradient ascent to update the parameters of the policy/network 
+        --- 5. go back to 2
+    -- how is the log probabilities of the policy being calculated, for one trajectory?
+        --- directly taken from the base-model, the probability of choosing ith token in the jth position as part of the answer
+        --- for log probability, add all the probabilities for each toekn in the answer
+    -- how is the reward being calculated, for one trajectory?
+        --- there's a transformer reward model 
+        --- the reward of the answer is being calculated as 
+                v_0 + gamma * v_1 + gamma^2 * v_2 + ...
+                where   v_i represent the reward model output of the ith token in the answer
+    
+    -- problem with this approach 
+    
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

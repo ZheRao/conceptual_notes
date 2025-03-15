@@ -1,0 +1,370 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+YOLO v1
+
+- idea
+    -- instead of using two networks (one for region proposal, one for classication & bounding box offset), it uses just one network 
+
+
+- basic processes
+    
+    -- take input image 
+    
+    -- resize to 448 x 448
+    
+    -- divide into S x S grid cells (for v1, S = 7), i.e., divide into 49 grids 
+    
+    -- each cell is responsible for predicting one object (i.e., where center of object falls into)
+
+
+
+- encoding bounding boxes (x, y, w, h, c)
+
+    -- the box represents an object, and it is represented by center coordinates, and size of the box 
+        --- i.e., (x, y, w, h)
+    
+    -- but the number can be big such as (200, 311, 142, 250), and unstable for network training 
+    
+    -- coordinates: as opposed to predicting the precise coordinates (e.g., (200, 311)), predict the relative (normalized) position of the point in relation to the upper left corner of the grid 
+        --- for example, the center coordinates for the object is (200, 311), and the coordinates for the upper left corner of the grid that contains that point is (192, 256)
+        --- the network will predict 
+                    x_delta = (200 - 192) / 64 ~ 0.13
+                    y_delta = (311 - 256) / 64 ~ 0.89
+    
+    -- size of the bounding box (i.e., width and height) is normalized by dividing by the size of the image (448 x 448 in this case)
+                    w_delta = w / 448 ~ 0.32 
+                    h_delta = h / 448 ~ 0.56
+    
+    -- the encoded bounding box transformation 
+        --- (200, 311, 142, 250) ------------> (0.13, 0.89, 0.32, 0.56)
+    
+    -- if the bounding box doesn't contain the center of an object, it will be (0, 0, 0, 0, 0)
+
+    -- lastly, there should also be a last component c, that indicates the probability of the grid containing an object 
+
+
+- label encoding: bounding boxes + one-hot encoding vector representing which class the object is that the grid contains 
+
+
+- network output (for each grid cell)
+    -- 2 bounding boxes 
+    -- for each bounding box 
+        --- encoded bounding box values (x_delta, y_delta, w_delta, h_delta, c)
+        --- conditional class probabilities 
+    
+    -- assuming 20 classes, the output vector will have length 30 
+        --- notice that we have 2 sets of bounding boxes values (size 10), but only 1 class probabilities (size 20)
+        --- we will only take the bounding box with highest confidence and disregard the other one 
+
+    -- final output shape: 7 x 7 x 30
+
+
+- how to recover original bounding box after network prediction 
+    -- for each of the 2 bounding boxes 
+        --- x = x_delta x 64 + x_a       ----------> x_a is the x coordinate of the top left corner of the grid 
+        --- y = y_delta x 64 + y_a 
+        --- w = w_delta x 448 
+        --- h = h_delta x 448
+
+
+- architecture 
+    -- usual feature extraction with conv layers and downsampling
+        --- 448 x 448 x 3 -------> 7 x 7 x 1024
+    -- flatten last conv map 7 x 7 x 1024 to 50176 feature vector 
+    -- pass through 2 fully connected layers 
+    -- output - 1470 feature vector 
+    -- reshape to 7 x 7 x 30 feature map
+
+
+- loss 
+    -- loss L is the sum of losses over all grid cells SxS 
+    -- while putting more importance on frid cells that contain objects 
+            L = [
+                summation over i (when grid i contains an object) [L_i]
+                + 0.5 * summation over j (when grid j doesn't contain any object) [L_j]
+            ]
+        --- we can adjust 0.5 
+    
+    -- for each grid with object 
+        --- L = objectness loss + classification loss + box regression loss * 5 
+        --- put more weights on box parameters 
+        --- box regression loss = [
+            (x'_delta - x_delta)^2 + (y'_delta - y_delta)^2 
+            + (sqrt(w'_delta) - sqrt(w_delta))^2 + (sqrt(h'_delta) - sqrt(h_delta))^2
+        ]
+        --- objectness loss = (c'_i - c_i)^2 
+        --- classification loss = summation over all j from 1 to 20 [ (p'_(i, c) - p_(i, c))^2 ]
+    
+    -- for grid without objects 
+        --- only calculates the objectness loss 
+        --- L = (c'_i - c_i)^2 
+
+
+    -- why use SSE as opposed to cross entropy loss for calculating the classification loss component 
+        --- the framework is a single regression problem, using SSE for all components ensures consistency and compatibility
+        --- SSE doesn't require additional softmax activation, make computation more efficient, aligned with the framework's focus on real-time speed 
+    -- downside 
+        --- SSE penalizes large errors quadratically, which can overemphasize outliers in classification 
+        --- no probabilistic interpretation 
+        --- YOLO v2 switched to cross-entropy loss 
+
+
+- performance 
+
+                model                           mAP (mean average precision)              FPS
+                YOLO                            63.4                                      45
+                Fast YOLO                       52.7                                      155
+                Fast R-CNN                      70                                        0.5
+                Faster R-CNN VGG-16             73.2                                      7
+                YOLO VGG-16                     66.4                                      21
+
+    -- YOLO is the best at generalization 
+
+
+- limitations 
+    -- maximum of 7 x 7 = 49 objsects can be detected 
+    -- difficult in detecting small objects that appear in groups 
+    -- poor localization 
+        --- large bounding box has to be predicted by a small grid 
+
+    
+
+
+
+
+
+
+
+
+
+
+YOLO v2 - better, faster, stronger 
+
+- improvement
+    -- accuracy from 63.4 of YOLO v1, to 78.6 of YOLO v2 
+    -- speed is faster 
+    -- new backbone 
+    -- use batchnorm 
+    -- high resolution classifier and feature maps 
+    -- 7 x 7 grid --> 14 x 14 grid --> 13 x 13 grid
+        --- more grids, more detail
+        --- problem: there's no single center location that's in any grid, might miss the object bounding box with center in that exact point 
+        --- solution: reduce to 13 x 13 
+    -- pass-through layer (residual connection)
+    -- bounding box improvement: fully convolutional network + anchor boxes 
+    -- final activation improvement 
+
+
+
+- introduced new backbone - Darknet-19
+    -- very lightweight - FLOPs: 5.58 Bn, GPU speed 200 FPS 
+        --- FLOPs (Floating Point Operations): quantifies computational complexity of a neural network 
+        --- lower indicates a faster and more efficient model 
+        --- it can estimate the feasibility of deploying a model on hardware with limited processing power 
+        --- models with fewer FLOPs typically consume less energy, which is critical for battery-powered devices 
+        --- calculate FLOPs
+
+                from torchinfo import summary 
+                summary(model, input_size=(1, 3, 32, 32))
+
+- utilized batchnormalization 
+    -- applied to all convolution layers 
+    -- improved mAP by 2%
+    -- help avoid overfitting 
+    -- regularization effect - removed dropout layers 
+
+
+- high resolution classifier 
+    -- improved the mAP by 4%
+    -- YOLO v1 used 224 x 224 as the input size for the pre-trained backbone network, and use 448 x 448 as overall detection task input 
+    -- YOLO v2: after pre-training a backbone network on 224 x 224 data, fine-tune it with 448 x 448 data before using it for detection task 
+        --- stage 1: train on ImageNet 
+        --- stage 2: resize, fine-tune on imageNet 
+        --- stegae 3: fine-tune on detection 
+
+
+
+- high resolution feature maps 
+    -- YOLO v1:         448 x 448 x 3 ---------- 28 x 28 x 512 ------- 14 x 14 x 1024                           ---------->     7 x 7 x 1024    ------------> flatten, linear layers, reshape 
+    -- YOLO v2:         416 x 416 x 3 ---------- 26 x 26 x 512 ------- 26 x 26 x 1024 ------- 13 x 13 x 1024    ---------->     14 x 14 x 1024 
+        --- removed one Maxpool layer 
+        --- improves object localization
+    
+- residual connection 
+    -- 1% mAP increase 
+    --     26 x 26 x 512   ------- 13 x 13 x 1024 --------- 13 x 13 x 1024 ------------------> 13 x 13 x (2048 + 1024)
+    --             |                                                               |
+    --             |       -------------------------------- 13 x 13 x 2048 --------|
+
+
+- bounding box improvement 
+    -- YOLO v1 has max 7 x 7 x 2 = 98 bounding boxes, much less than other models like SSD300 (8732)
+    -- YOLO v2 has 13 x 13 grids, but we want to increase the number of bounding boxes even more 
+        --- if increase to 50 x 50 grids, the fully connected layers at the end would have too much parameters 
+        --- idea: use convolutional layers instead of linear layers 
+    
+    -- v1 can detect a maximum of 49 objects 
+    -- v2 can detect a maximum of 169 objects 
+        --- solution: instead of predicting one class per grid, predicting one class per box 
+        --- e.g., instead of using 1 class per 2 boxes predicted in v1, using n class per n boxes predicted 
+    
+    -- if there are two objects with different shape (e.g., a long bus vs. a tall human), but with the same center, it is difficult for the model to correctly predict these two objects 
+        --- solution: anchor boxes 
+
+
+- anchor boxes 
+    -- predefined set of shapes (square, long rectangle, wide rectangle shapes with different scale)
+    -- as opposed to calculate the bounding boxes in relation to the predicted center point in relation to the upper left cornor of the grid, claculate the bounding boexes in relation to the anchor boxes 
+    -- mAP slightly decreased by 0.3%, 
+    -- recall has improved from 81% to 88%, indicates that the model has more room to improve 
+    -- how to increase mAP?   ------------> choose anchors based on the dataset 
+
+
+- anchor boxes clustering 
+    -- instead of using predefined boxes, use K-means clustering for getting the average shapes and locations in the databset 
+    -- select 5 boxes 
+
+
+- activation improvement 
+    -- predicted center of the object is normalized to range [0, 1], but v1 use regression, output can be [-inf, inf]
+        --- can have very high losses, and cause unstable training 
+        --- solution: constrain the outputs 
+    
+    -- use logistic activation on location coordinates: range - [0, 1]
+        --- x_delta = sigmoid(x_delta)
+        --- y_delta = sigmoid(y_delta)
+    
+    -- use exponential terms of width and height predictions: range - [0, +inf]
+        --- w_delta = exp(w_delta)
+        --- h_delta = exp(h_delta)
+
+    -- predict coordinates in relation to grid as opposed to anchor boxes such as in Faster-RCNN
+
+
+- how to recover the bounding box
+    -- model outputs (t_x, t_y, t_w, t_h, t_o)
+    -- current grid coordinates (c_x, c_y)
+    -- current anchor box (P_x, P_h)
+
+    -- b_x = sigma(t_x) + c_x 
+    -- b_y = sigma(t_y) + c_y 
+    -- b_w = P_w * exp(t_w)
+    -- b_h = P_h * exp(t_h)
+
+    -- sigma(t_o): class probabilities for each box 
+
+
+- modified box predictions 
+    -- 5% mAP increase
+    -- for every grid - 5 boxes predicted 
+    -- for each box 
+        --- box predictions - (t_x, t_y, t_w, t_h, t_o)
+        --- class probabilities - (p_1, ..., p_20)
+    -- parameters per grid 
+        --- 5 x (5 + 20) = 125 
+    -- total grid cells - 13 x 13 
+    -- total parameters - 13 x 13 x 125 
+
+
+- target calculations
+    -- targets for each grid cell and anchor box: 
+        --- targets for x, y are relative to grid cell 
+        --- targets for w, h are relative to anchor box
+
+
+- loss calculation 
+    -- compared to v1 where we calculate loss over all grid, now for each grid, we need to compute the loss over all anchor boxes 
+    
+    -- loss for only objectness score (sigma(t_o): 0 for no object and 1 for containing object in the anchor box)
+                1_(max IOU < thresh) lambda_(no_obj) * (0 - sigma(t_o_ijk))^2 
+    
+    -- loss between anchors and predictions 
+        --- calculate loss between alignment of Anchors and Predictions 
+    
+    -- bounding box prediction loss (same as v1)
+        --- calculate loss between ground truth and prediction 
+    
+    -- objectness and class losses  (same as v1)
+        --- part 1: lambda_obj * (1 - sigma(t_o_ijl))^2 ----------- loss for predicting whether there's an object in the anchor box 
+        --- part 2: lambda_class * summation over all c [ ((p'_ijc - p_ijc)) ^2]
+
+
+- multi-scale training 
+    -- since YOLO v2 is fully convolutional, there's no fixed expected linear layer input size, network can accept any image resolution 
+            (loss calculation is directly in relation to grid, which changes with changes in input image size)
+    -- but resolution should be multiple of 32
+    -- scale is randomly picked for every 10 batches (acts as data augmentation)
+
+    -- lower resolutions - low accuracy but good speed 
+        --- 288 x 288 - 69 mAP, 90FPS 
+        --- 544 x 544 - 78.6 mAP, 40 FPS 
+
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
